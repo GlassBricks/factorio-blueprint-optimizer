@@ -1,533 +1,381 @@
-use std::collections::{HashMap, HashSet};
-use std::fmt::Debug;
-use std::hash::Hash;
+use std::ops::Deref;
 
-use clap::builder::TypedValueParser;
+use euclid::vec2;
+use hashbrown::{HashMap, HashSet};
 use itertools::Itertools;
-use noisy_float::types::R64;
 
-use factorio_blueprint::objects as fbp;
-use factorio_blueprint::objects::{
-    Blueprint, Color, Connection, ControlBehavior, EntityFilterMode, EntityNumber, EntityPriority,
-    EntityType, GraphicsVariation, InfinitySettings, Inventory, ItemFilter, ItemRequest,
-    ItemStackIndex, LogisticFilter, Prototype, SpeakerAlertParameter, SpeakerParameter,
+use crate::better_bp::{BlueprintEntities, BlueprintEntityData, EntityId};
+use crate::position::{
+    BoundingBox, BoundingBoxExt, CardinalDirection, IterTiles, MapPosition, Rotate,
+    TileBoundingBox, TilePosition
 };
+use crate::prototype_data::{EntityPrototypeDict, EntityPrototypeRef, PoleData};
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
-pub struct Position {
-    pub x: R64,
-    pub y: R64,
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorldEntity {
+    pub prototype: EntityPrototypeRef,
+    pub position: MapPosition,
+    pub direction: u8,
 }
 
-impl From<&fbp::Position> for Position {
-    fn from(pos: &fbp::Position) -> Self {
-        Self { x: pos.x, y: pos.y }
+impl WorldEntity {
+    /**
+     * Returns bbox, from the entity's perspective: (0,0) is the center of the entity.
+     */
+    pub fn local_bbox(&self) -> BoundingBox {
+        let bbox = self.prototype.collision_box;
+        bbox.rotate(CardinalDirection::from_u8_rounding(self.direction))
+    }
+
+    pub fn world_bbox(&self) -> BoundingBox {
+        self.local_bbox().translate(self.position.to_vector())
+    }
+
+    pub fn uses_power(&self) -> bool {
+        self.prototype.pole_data.is_none() && self.prototype.uses_power
     }
 }
 
-impl From<&Position> for fbp::Position {
-    fn from(pos: &Position) -> Self {
-        Self { x: pos.x, y: pos.y }
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, Ord, PartialOrd)]
-pub struct EntityId(u32);
-
-#[derive(Clone)]
-pub struct BlueprintEntityData {
-    pub name: Prototype,
-    pub position: Position,
-    pub direction: Option<u8>,
-
-    pub orientation: Option<R64>,
-    pub control_behavior: Option<ControlBehavior>,
-    pub items: Option<ItemRequest>,
-    pub recipe: Option<Prototype>,
-    pub bar: Option<ItemStackIndex>,
-    pub inventory: Option<Inventory>,
-    pub infinity_settings: Option<InfinitySettings>,
-    pub type_: Option<EntityType>,
-    pub input_priority: Option<EntityPriority>,
-    pub output_priority: Option<EntityPriority>,
-    pub filter: Option<Prototype>,
-    pub filters: Option<Vec<ItemFilter>>,
-    pub filter_mode: Option<EntityFilterMode>,
-    pub override_stack_size: Option<u8>,
-    pub drop_position: Option<Position>,
-    pub pickup_position: Option<Position>,
-    pub request_filters: Option<Vec<LogisticFilter>>,
-    pub request_from_buffers: bool,
-    pub parameters: Option<SpeakerParameter>,
-    pub alert_parameters: Option<SpeakerAlertParameter>,
-    pub auto_launch: bool,
-    pub variation: Option<GraphicsVariation>,
-    pub color: Option<Color>,
-    pub station: Option<String>,
-    pub switch_state: bool,
-    pub manual_trains_limit: Option<u32>,
-}
-
-trait SkipNone {
-    fn skip_none(&mut self, name: &str, value: &Option<impl Debug>) -> &mut Self;
-    fn skip_false(&mut self, name: &str, value: bool) -> &mut Self;
-}
-
-impl SkipNone for std::fmt::DebugStruct<'_, '_> {
-    fn skip_none(&mut self, name: &str, value: &Option<impl Debug>) -> &mut Self {
-        if let Some(value) = value {
-            self.field(name, value);
-        }
-        self
-    }
-    fn skip_false(&mut self, name: &str, value: bool) -> &mut Self {
-        if value {
-            self.field(name, &value);
-        }
-        self
-    }
-}
-
-impl Debug for BlueprintEntityData {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BlueprintEntityData")
-            .field("name", &self.name)
-            .field("position", &self.position)
-            .skip_none("direction", &self.direction)
-            .skip_none("orientation", &self.orientation)
-            .skip_none("control_behavior", &self.control_behavior)
-            .skip_none("items", &self.items)
-            .skip_none("recipe", &self.recipe)
-            .skip_none("bar", &self.bar)
-            .skip_none("inventory", &self.inventory)
-            .skip_none("infinity_settings", &self.infinity_settings)
-            .skip_none("type_", &self.type_)
-            .skip_none("input_priority", &self.input_priority)
-            .skip_none("output_priority", &self.output_priority)
-            .skip_none("filter", &self.filter)
-            .skip_none("filters", &self.filters)
-            .skip_none("filter_mode", &self.filter_mode)
-            .skip_none("override_stack_size", &self.override_stack_size)
-            .skip_none("drop_position", &self.drop_position)
-            .skip_none("pickup_position", &self.pickup_position)
-            .skip_none("request_filters", &self.request_filters)
-            .skip_false("request_from_buffers", self.request_from_buffers)
-            .skip_none("parameters", &self.parameters)
-            .skip_none("alert_parameters", &self.alert_parameters)
-            .skip_false("auto_launch", self.auto_launch)
-            .skip_none("variation", &self.variation)
-            .skip_none("color", &self.color)
-            .skip_none("station", &self.station)
-            .skip_false("switch_state", self.switch_state)
-            .skip_none("manual_trains_limit", &self.manual_trains_limit)
-            .finish()
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
-pub enum WireColor {
-    Red,
-    Green,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
-pub struct ConnectionPointId {
-    pub entity_id: EntityId,
-    /// 1 for almost everything, 2 for combinator output
-    pub circuit_id: bool,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
-pub struct OutgoingConnection {
-    pub dest: ConnectionPointId,
-    pub color: WireColor,
-}
-
-pub struct ConnectionPoint(Option<HashSet<OutgoingConnection>>);
-
-impl ConnectionPoint {
-    pub fn iter(&self) -> impl Iterator<Item = &OutgoingConnection> {
-        self.0.as_ref().into_iter().flat_map(|set| set.iter())
-    }
-    pub fn has_any(&self) -> bool {
-        self.0.is_some()
-    }
-
-    fn add_connection(&mut self, connection: OutgoingConnection) {
-        self.0.get_or_insert_with(HashSet::new).insert(connection);
-    }
-    fn clear_if_empty(&mut self) {
-        if let Some(set) = &mut self.0 {
-            if set.is_empty() {
-                self.0 = None;
-            }
-        }
-    }
-    fn remove_connection(&mut self, connection: &OutgoingConnection) {
-        if let Some(set) = &mut self.0 {
-            set.remove(connection);
-        }
-        self.clear_if_empty();
-    }
-    fn clear(&mut self) {
-        self.0 = None;
-    }
-}
-
-impl Debug for ConnectionPoint {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(connections) = &self.0 {
-            f.debug_set().entries(connections.iter()).finish()
-        } else {
-            f.write_str("None")
+impl WorldEntity {
+    pub fn from_bp_entity(
+        prototype_dict: &EntityPrototypeDict,
+        bp_entity: &BlueprintEntityData,
+    ) -> Self {
+        WorldEntity {
+            prototype: prototype_dict[&bp_entity.name].clone(),
+            position: bp_entity.position,
+            direction: bp_entity.direction.unwrap_or(0),
         }
     }
 }
 
-#[derive(Debug)]
-pub struct BlueprintEntity {
+#[derive(Debug, Clone)]
+pub struct ModelEntity {
+    pub data: WorldEntity,
     id: EntityId,
-    pub data: BlueprintEntityData,
-    pub connections: (ConnectionPoint, ConnectionPoint),
-    pub neighbours: Option<HashSet<EntityId>>,
+    extra: EntityExtraData,
 }
 
-impl BlueprintEntity {
-    pub fn new(id: EntityId, data: BlueprintEntityData) -> Self {
-        Self {
-            id,
-            data,
-            connections: (ConnectionPoint(None), ConnectionPoint(None)),
-            neighbours: None,
-        }
+impl Deref for ModelEntity {
+    type Target = WorldEntity;
+    fn deref(&self) -> &WorldEntity {
+        &self.data
     }
+}
+impl ModelEntity {
+    // non-mut access only
     pub fn id(&self) -> EntityId {
         self.id
     }
-    pub fn connection_pt(&self, pt_id: bool) -> &ConnectionPoint {
-        match pt_id {
-            false => &self.connections.0,
-            true => &self.connections.1,
+}
+
+#[derive(Debug, Clone)]
+pub enum EntityExtraData {
+    Pole(PoleConnections),
+    None,
+}
+
+#[derive(Debug, Clone)]
+pub struct PoleConnections {
+    pub connections: HashSet<EntityId>,
+}
+impl ModelEntity {
+    fn new_empty(id: EntityId, data: WorldEntity) -> Self {
+        ModelEntity {
+            id,
+            extra: if data.prototype.pole_data.is_some() {
+                EntityExtraData::Pole(PoleConnections {
+                    connections: HashSet::new(),
+                })
+            } else {
+                EntityExtraData::None
+            },
+            data,
         }
     }
-    fn connection_pt_mut(&mut self, pt_id: bool) -> &mut ConnectionPoint {
-        match pt_id {
-            false => &mut self.connections.0,
-            true => &mut self.connections.1,
+
+    pub fn pole_data(&self) -> Option<(PoleData, &PoleConnections)> {
+        match &self.extra {
+            EntityExtraData::Pole(pole) => Some((self.prototype.pole_data.unwrap(), pole)),
+            _ => None,
+        }
+    }
+
+    fn pole_connections_mut(&mut self) -> Option<&mut PoleConnections> {
+        match &mut self.extra {
+            EntityExtraData::Pole(pole) => Some(pole),
+            _ => None,
         }
     }
 }
 
-#[derive(Debug)]
-#[non_exhaustive]
-pub struct BlueprintEntities {
-    pub entities: HashMap<EntityId, BlueprintEntity>,
+pub struct BpModel {
+    by_tile: HashMap<TilePosition, Vec<EntityId>>,
+    all_entities: HashMap<EntityId, ModelEntity>,
+    next_id: EntityId,
 }
 
-impl BlueprintEntities {
-    pub fn from_blueprint(bp: &Blueprint) -> Self {
-        let entities: HashMap<EntityId, BlueprintEntity> = bp
-            .entities
-            .iter()
-            .map(move |entity| {
-                let id = EntityId(entity.entity_number.get() as u32);
-                let result = BlueprintEntity::new(
-                    id,
-                    BlueprintEntityData {
-                        name: entity.name.clone(),
-                        position: (&entity.position).into(),
-                        direction: entity.direction,
-                        orientation: entity.orientation,
-                        control_behavior: entity.control_behavior.clone(),
-                        items: entity.items.clone(),
-                        recipe: entity.recipe.clone(),
-                        bar: entity.bar,
-                        inventory: entity.inventory.clone(),
-                        infinity_settings: entity.infinity_settings.clone(),
-                        type_: entity.type_,
-                        input_priority: entity.input_priority,
-                        output_priority: entity.output_priority,
-                        filter: entity.filter.clone(),
-                        filters: entity.filters.clone(),
-                        filter_mode: entity.filter_mode,
-                        override_stack_size: entity.override_stack_size,
-                        drop_position: entity.drop_position.as_ref().map(|pos| pos.into()),
-                        pickup_position: entity.pickup_position.as_ref().map(|pos| pos.into()),
-                        request_filters: entity.request_filters.clone(),
-                        request_from_buffers: entity.request_from_buffers.unwrap_or(false),
-                        parameters: entity.parameters.clone(),
-                        alert_parameters: entity.alert_parameters.clone(),
-                        auto_launch: entity.auto_launch.unwrap_or(false),
-                        variation: entity.variation,
-                        color: entity.color.clone(),
-                        station: entity.station.clone(),
-                        switch_state: entity.switch_state.unwrap_or(false),
-                        manual_trains_limit: entity.manual_trains_limit,
-                    },
-                );
-                (id, result)
-            })
-            .collect();
-
-        let mut res = Self { entities };
-        for bp_entity in &bp.entities {
-            if bp_entity.neighbours.is_none() {
+impl BpModel {
+    pub fn new() -> Self {
+        BpModel {
+            by_tile: HashMap::new(),
+            all_entities: HashMap::new(),
+            next_id: EntityId(1),
+        }
+    }
+    pub fn from_bp_entities(
+        bp: &BlueprintEntities,
+        prototype_dict: &EntityPrototypeDict,
+    ) -> BpModel {
+        let mut res: BpModel = BpModel::new();
+        for (id, entity) in bp.entities.iter() {
+            res.add_internal(ModelEntity::new_empty(
+                *id,
+                WorldEntity::from_bp_entity(prototype_dict, &entity.data),
+            ));
+        }
+        for (id, entity) in bp.entities.iter() {
+            let neighbors = &entity.neighbours.as_ref();
+            if neighbors.is_none() {
                 continue;
             }
-            let id = EntityId(bp_entity.entity_number.get() as u32);
-            let neighbors = bp_entity.neighbours.as_ref().unwrap();
-            for neighbor in neighbors {
-                res.add_cable_connection(id, EntityId(neighbor.get() as u32));
+            for neighbor_id in neighbors.unwrap() {
+                if let Some([this, other]) = res.all_entities.get_many_mut([id, neighbor_id]) {
+                    this.pole_connections_mut()
+                        .unwrap()
+                        .connections
+                        .insert(*neighbor_id);
+                    other
+                        .pole_connections_mut()
+                        .unwrap()
+                        .connections
+                        .insert(*id);
+                }
             }
         }
-
-        let import_connections =
-            |src: &mut BlueprintEntity, connections: &fbp::EntityConnections| {
-                let add_colors =
-                    |pt: &mut ConnectionPoint,
-                     color: WireColor,
-                     data: &Option<Vec<fbp::ConnectionData>>| {
-                        if let Some(data) = data {
-                            for connection in data {
-                                pt.add_connection(OutgoingConnection {
-                                    dest: ConnectionPointId {
-                                        entity_id: EntityId(connection.entity_id.get() as u32),
-                                        circuit_id: connection.circuit_id.unwrap_or(1) == 2,
-                                    },
-                                    color,
-                                });
-                            }
-                        }
-                    };
-
-                let mut add_pt = |pt: &mut ConnectionPoint, data: &fbp::ConnectionPoint| {
-                    add_colors(pt, WireColor::Red, &data.red);
-                    add_colors(pt, WireColor::Green, &data.green);
-                };
-                use factorio_blueprint::objects::Connection::{Multiple, Single};
-                use factorio_blueprint::objects::EntityConnections::{NumberIdx, StringIdx};
-                let mut map_connections =
-                    |pt: &mut ConnectionPoint, connection: &fbp::Connection| match connection {
-                        Single(data) => add_pt(pt, data),
-                        Multiple(_) => panic!("This is just wrong??"),
-                    };
-                let (p1, p2) = match connections {
-                    StringIdx(map) => (map.get("1"), map.get("2")),
-                    NumberIdx(map) => (
-                        map.get(&EntityNumber::new(1).unwrap()),
-                        map.get(&EntityNumber::new(2).unwrap()),
-                    ),
-                };
-                if let Some(p1) = p1 {
-                    map_connections(&mut src.connections.0, p1);
-                }
-                if let Some(p2) = p2 {
-                    map_connections(&mut src.connections.1, p2);
-                }
-            };
-
-        for bp_entity in &bp.entities {
-            let id = EntityId(bp_entity.entity_number.get() as u32);
-            let mut entity = res.get_mut(id).unwrap();
-            if let Some(connections) = &bp_entity.connections {
-                import_connections(&mut entity, connections);
-            }
-        }
-
         res
     }
 
-    pub fn to_blueprint_entities(&self) -> Vec<fbp::Entity> {
-        let mut sorted_entities = self.entities.values().collect::<Vec<_>>();
-        sorted_entities.sort_by_key(|entity| entity.id);
+    fn add_internal(&mut self, entity: ModelEntity) {
+        let id = entity.id;
+        for tile in entity.world_bbox().iter_tiles() {
+            self.by_tile.entry(tile).or_default().push(id);
+        }
+        if let Some(x) = self.all_entities.insert(id, entity) {
+            panic!("Entity with id {:?} already exists: {:?}", id, x);
+        }
+    }
 
-        let id_to_new = sorted_entities
-            .iter()
-            .enumerate()
-            .map(|(i, entity)| (entity.id, EntityNumber::new(i + 1).unwrap()))
-            .collect::<HashMap<_, _>>();
+    pub fn add(&mut self, entity: WorldEntity) -> EntityId {
+        let id = self.next_id;
+        self.next_id.0 += 1;
+        self.add_internal(ModelEntity::new_empty(id, entity));
+        id
+    }
 
-        let new_entities = sorted_entities
+    pub fn add_no_overlap(&mut self, entity: WorldEntity) -> Option<EntityId> {
+        if entity
+            .world_bbox()
+            .iter_tiles()
+            .all(|tile| !self.occupied(tile))
+        {
+            Some(self.add(entity))
+        } else {
+            None
+        }
+    }
+
+    pub fn remove(&mut self, id: &EntityId) {
+        let entity = self.all_entities.remove(id).unwrap();
+        for tile in entity.world_bbox().iter_tiles() {
+            let entities = self.by_tile.get_mut(&tile).unwrap();
+            entities.retain(|x| x != id);
+            if entities.is_empty() {
+                self.by_tile.remove(&tile);
+            }
+        }
+    }
+
+    pub fn occupied(&self, tile: TilePosition) -> bool {
+        self.by_tile.contains_key(&tile)
+    }
+
+    pub fn by_tile(&self) -> &HashMap<TilePosition, Vec<EntityId>> {
+        &self.by_tile
+    }
+    pub fn all_entities(&self) -> &HashMap<EntityId, ModelEntity> {
+        &self.all_entities
+    }
+    
+    pub fn get_by_id(&self, id: &EntityId) -> Option<&ModelEntity> {
+        self.all_entities.get(id)
+    }
+    pub fn get_by_id_mut(&mut self, id: &EntityId) -> Option<&mut ModelEntity> {
+        self.all_entities.get_mut(id)
+    }
+
+    pub fn all_world_entities(&self) -> impl Iterator<Item = &WorldEntity> {
+        self.all_entities.values().map(|entity| &entity.data)
+    }
+
+    pub fn entities_at(&self, tile: TilePosition) -> impl Iterator<Item = &ModelEntity> + '_ {
+        self.by_tile
+            .get(&tile)
+            .map(|ids| ids.as_slice())
+            .unwrap_or(&[])
             .iter()
-            .map(|(old_entity)| fbp::Entity {
-                entity_number: id_to_new[&old_entity.id],
-                name: old_entity.data.name.clone(),
-                position: (&old_entity.data.position).into(),
-                direction: old_entity.data.direction,
-                orientation: old_entity.data.orientation,
-                control_behavior: old_entity.data.control_behavior.clone(),
-                items: old_entity.data.items.clone(),
-                recipe: old_entity.data.recipe.clone(),
-                bar: old_entity.data.bar,
-                inventory: old_entity.data.inventory.clone(),
-                infinity_settings: old_entity.data.infinity_settings.clone(),
-                type_: old_entity.data.type_,
-                input_priority: old_entity.data.input_priority,
-                output_priority: old_entity.data.output_priority,
-                filter: old_entity.data.filter.clone(),
-                filters: old_entity.data.filters.clone(),
-                filter_mode: old_entity.data.filter_mode,
-                override_stack_size: old_entity.data.override_stack_size,
-                drop_position: old_entity.data.drop_position.as_ref().map(|pos| pos.into()),
-                pickup_position: old_entity
-                    .data
-                    .pickup_position
-                    .as_ref()
-                    .map(|pos| pos.into()),
-                request_filters: old_entity.data.request_filters.clone(),
-                request_from_buffers: if old_entity.data.request_from_buffers {
-                    Some(true)
-                } else {
-                    None
-                },
-                parameters: old_entity.data.parameters.clone(),
-                alert_parameters: old_entity.data.alert_parameters.clone(),
-                auto_launch: if old_entity.data.auto_launch {
-                    Some(true)
-                } else {
-                    None
-                },
-                variation: old_entity.data.variation,
-                color: old_entity.data.color.clone(),
-                station: old_entity.data.station.clone(),
-                manual_trains_limit: old_entity.data.manual_trains_limit,
-                switch_state: if old_entity.data.switch_state {
-                    Some(true)
-                } else {
-                    None
-                },
-                connections: {
-                    if !old_entity.connections.0.has_any() && !old_entity.connections.1.has_any() {
-                        None
-                    } else {
-                        let map_pts = |pts: &Vec<OutgoingConnection>| {
-                            let vec: Vec<fbp::ConnectionData> = pts
-                                .iter()
-                                .map(|conn| fbp::ConnectionData {
-                                    entity_id: id_to_new[&conn.dest.entity_id],
-                                    circuit_id: if conn.dest.circuit_id { Some(2) } else { None },
-                                    wire_id: None,
-                                })
-                                .sorted_by_key(|conn| (conn.entity_id, conn.circuit_id))
-                                .collect();
-                            if vec.is_empty() {
-                                None
-                            } else {
-                                Some(vec)
-                            }
-                        };
-                        let map_pt = |pt: &ConnectionPoint| {
-                            let (red, green) = pt
-                                .iter()
-                                .partition::<Vec<_>, _>(|conn| conn.color == WireColor::Red);
-                            let (red, green) = (map_pts(&red), map_pts(&green));
-                            if red.is_none() && green.is_none() {
-                                None
-                            } else {
-                                Some(Connection::Single(fbp::ConnectionPoint { red, green }))
-                            }
-                        };
-                        let pt1 = map_pt(&old_entity.connections.0);
-                        let pt2 = map_pt(&old_entity.connections.1);
-                        if pt1.is_none() && pt2.is_none() {
-                            None
-                        } else {
-                            Some(fbp::EntityConnections::StringIdx({
-                                let mut map = HashMap::new();
-                                if let Some(pt1) = pt1 {
-                                    map.insert("1".into(), pt1);
-                                }
-                                if let Some(pt2) = pt2 {
-                                    map.insert("2".into(), pt2);
-                                }
-                                map
-                            }))
-                        }
-                    }
-                },
-                neighbours: old_entity
-                    .neighbours
-                    .as_ref()
-                    .map(|neigh| neigh.iter().map(|id| id_to_new[id])
-                        .sorted()
-                        .collect()),
+            .map(move |id| &self.all_entities[id])
+    }
+
+    pub fn connectable_poles(
+        &self,
+        pole_pos: MapPosition,
+        pole_data: PoleData,
+    ) -> impl Iterator<Item = &ModelEntity> + '_ {
+        let this_dist = pole_data.wire_distance;
+        const EPS: f64 = 1e-6;
+        BoundingBox::around_point(pole_pos, this_dist)
+            .round_to_tiles_covering_center()
+            .iter_tiles()
+            .flat_map(|tile| self.entities_at(tile))
+            .filter(move |entity| {
+                entity.prototype.pole_data.is_some_and(|pd| {
+                    let max_dist = this_dist.min(pd.wire_distance);
+                    (pole_pos - entity.position).square_length() <= max_dist * max_dist + EPS
+                })
             })
-            .collect();
+            .unique_by(|entity| entity.id)
+    }
 
-        new_entities
+    pub fn powered_entities(
+        &self,
+        pole_pos: MapPosition,
+        pole_data: PoleData,
+    ) -> impl Iterator<Item = &ModelEntity> + '_ {
+        let this_area_dist = pole_data.supply_radius;
+        // poles in circle around map_pos with radius
+        BoundingBox::around_point(pole_pos, this_area_dist)
+            .round_out_to_tiles()
+            .iter_tiles()
+            .flat_map(|tile| self.entities_at(tile))
+            .filter(|entity| entity.uses_power())
+            .unique_by(|entity| entity.id)
+    }
+
+    pub fn get_bounding_box(&self) -> TileBoundingBox {
+        let bbox = TileBoundingBox::from_points(self.by_tile.keys());
+        TileBoundingBox::new(bbox.min, bbox.max + vec2(1, 1))
     }
 }
 
-impl BlueprintEntities {
-    pub fn has_id(&self, id: EntityId) -> bool {
-        self.entities.contains_key(&id)
-    }
+#[cfg(test)]
+mod tests {
+    mod entity_grid {
+        use euclid::point2;
+        use itertools::Itertools;
 
-    pub fn add_wire_connection(
-        &mut self,
-        p1: ConnectionPointId,
-        p2: ConnectionPointId,
-        color: WireColor,
-    ) -> bool {
-        if p1 == p2 || !self.has_id(p1.entity_id) || !self.has_id(p2.entity_id) {
-            return false;
+        use crate::bp_model::{BpModel, WorldEntity};
+        use crate::position::BoundingBox;
+        use crate::prototype_data::{EntityPrototype, EntityPrototypeRef, PoleData};
+        use crate::rcid::RcId;
+
+        fn entity_data(uses_power: bool) -> EntityPrototypeRef {
+            RcId::new(EntityPrototype {
+                type_: "test".to_string(),
+                name: "test".to_string(),
+                tile_width: 1,
+                tile_height: 1,
+                collision_box: BoundingBox::new(point2(-0.5, -0.5), point2(0.5, 0.5)),
+                uses_power,
+                pole_data: None,
+            })
         }
-        let e1 = self.get_mut(p1.entity_id).unwrap();
-        e1.connection_pt_mut(p1.circuit_id)
-            .add_connection(OutgoingConnection { dest: p2, color });
-        let e2 = self.get_mut(p2.entity_id).unwrap();
-        e2.connection_pt_mut(p2.circuit_id)
-            .add_connection(OutgoingConnection { dest: p1, color });
-        true
-    }
 
-    pub fn add_cable_connection(&mut self, entity1: EntityId, entity2: EntityId) -> bool {
-        if entity1 == entity2 || !self.has_id(entity1) || !self.has_id(entity2) {
-            return false;
+        #[test]
+        fn add_and_get() {
+            let mut grid = BpModel::new();
+            let entity = WorldEntity {
+                position: point2(0.5, 0.5),
+                direction: 0,
+                prototype: entity_data(false),
+            };
+            let entity_id = grid.add(entity.clone());
+            let at0 = grid.entities_at(point2(0, 0)).next();
+            assert_eq!(at0.unwrap().data, entity);
+            assert!(grid.entities_at(point2(1, 0)).next().is_none());
+            assert!(grid.entities_at(point2(0, 1)).next().is_none());
+
+            let a = grid.add_no_overlap(entity.clone());
+            assert_eq!(a, None);
+
+            grid.remove(&entity_id);
+            assert!(grid.entities_at(point2(0, 0)).next().is_none());
         }
-        let e1 = self.entities.get_mut(&entity1).unwrap();
-        e1.neighbours
-            .get_or_insert_with(HashSet::new)
-            .insert(entity2);
-        let e2 = self.entities.get_mut(&entity2).unwrap();
-        e2.neighbours
-            .get_or_insert_with(HashSet::new)
-            .insert(entity1);
-        true
-    }
 
-    fn get(&self, id: EntityId) -> Option<&BlueprintEntity> {
-        self.entities.get(&id)
-    }
-    fn get_mut(&mut self, id: EntityId) -> Option<&mut BlueprintEntity> {
-        self.entities.get_mut(&id)
-    }
+        fn pole_entity_data() -> EntityPrototypeRef {
+            RcId::new(EntityPrototype {
+                type_: "electric-pole".to_string(),
+                name: "test".to_string(),
+                tile_width: 1,
+                tile_height: 1,
+                collision_box: BoundingBox::new(point2(-0.5, -0.5), point2(0.5, 0.5)),
+                uses_power: false,
+                pole_data: Some(PoleData {
+                    wire_distance: 7.5,
+                    supply_radius: 2.5,
+                }),
+            })
+        }
 
-    fn entities(&self) -> &HashMap<EntityId, BlueprintEntity> {
-        &self.entities
+        #[test]
+        fn powered_entities() {
+            let mut grid = BpModel::new();
+            let id1 = grid.add(WorldEntity {
+                position: point2(0.5, 0.5),
+                direction: 0,
+                prototype: entity_data(true),
+            });
+            grid.add(WorldEntity {
+                position: point2(2.5, 1.5),
+                direction: 0,
+                prototype: entity_data(false),
+            });
+
+            let powered1 = grid
+                .powered_entities(point2(2.5, 2.5), pole_entity_data().pole_data.unwrap())
+                .map(|entity| entity.id)
+                .collect_vec();
+            assert_eq!(powered1, vec![id1]);
+            let powered2 = grid
+                .powered_entities(point2(3.5, 2.5), pole_entity_data().pole_data.unwrap())
+                .map(|entity| entity.id)
+                .collect_vec();
+            assert_eq!(powered2, vec![]);
+        }
+
+        #[test]
+        fn connectable_poles() {
+            let mut grid = BpModel::new();
+            let pole1 = grid.add(WorldEntity {
+                position: point2(0.5, 0.5),
+                direction: 0,
+                prototype: pole_entity_data(),
+            });
+            let pole2 = grid.add(WorldEntity {
+                position: point2(10.5, 1.5),
+                direction: 0,
+                prototype: pole_entity_data(),
+            });
+            let connectable1 = grid
+                .connectable_poles(point2(2.5, 2.5), pole_entity_data().pole_data.unwrap())
+                .map(|entity| entity.id)
+                .collect_vec();
+            assert_eq!(connectable1, vec![pole1]);
+            let connectable2 = grid
+                .connectable_poles(point2(8.5, 2.5), pole_entity_data().pole_data.unwrap())
+                .map(|entity| entity.id)
+                .collect_vec();
+            assert_eq!(connectable2, vec![pole2]);
+        }
     }
 }
-
-//
-// struct EntityRef<'a> {
-//     id: EntityId,
-//     entity: &'a mut BlueprintEntity,
-//     pub parent: &'a mut BlueprintEntities,
-// }
-//
-// impl<'a> Debug for EntityRef<'a> {
-//     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-//         f.debug_struct("EntityRef")
-//             .field("id", &self.id)
-//             .finish()
-//     }
-// }
-//
-// impl<'a> EntityRef<'a> {
-//     fn get(&self) -> Option<&BlueprintEntity> {
-//         self.parent.entities.get(&self.id)
-//     }
-//     fn get_mut(&mut self) -> Option<&mut BlueprintEntity> {
-//         self.parent.entities.get_mut(&self.id)
-//     }
-// }
