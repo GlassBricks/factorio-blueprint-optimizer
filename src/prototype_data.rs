@@ -77,6 +77,12 @@ pub struct EntityPrototype {
     pub pole_data: Option<PoleData>,
 }
 
+impl EntityPrototype {
+    pub fn is_pole(&self) -> bool {
+        self.pole_data.is_some()
+    }
+}
+
 pub type EntityPrototypeRef = RcId<EntityPrototype>;
 #[derive(Debug, Clone)]
 pub struct EntityPrototypeDict(pub Rc<HashMap<String, EntityPrototypeRef>>);

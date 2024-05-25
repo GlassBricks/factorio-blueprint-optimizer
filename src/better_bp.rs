@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::fmt::{Debug, Display};
+use std::fmt::Debug;
 use std::hash::Hash;
 
 use factorio_blueprint::objects as fbp;
@@ -332,6 +332,7 @@ impl BlueprintEntities {
         res
     }
 
+    #[allow(dead_code)]
     pub fn to_blueprint_entities(&self) -> Vec<fbp::Entity> {
         let mut sorted_entities = self.entities.values().collect::<Vec<_>>();
         sorted_entities.sort_by_key(|entity| entity.id);
@@ -550,8 +551,14 @@ mod tests {
             assert_eq!(new.station, old.station);
             assert_eq!(new.switch_state, old.switch_state);
             assert_eq!(new.manual_trains_limit, old.manual_trains_limit);
-            let a = new.neighbours.as_ref().map(|a| a.iter().collect::<HashSet<_>>());
-            let b = old.neighbours.as_ref().map(|a| a.iter().collect::<HashSet<_>>());
+            let a = new
+                .neighbours
+                .as_ref()
+                .map(|a| a.iter().collect::<HashSet<_>>());
+            let b = old
+                .neighbours
+                .as_ref()
+                .map(|a| a.iter().collect::<HashSet<_>>());
             assert_eq!(a, b);
         }
     }

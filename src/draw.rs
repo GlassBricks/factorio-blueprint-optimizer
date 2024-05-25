@@ -1,7 +1,7 @@
 use std::ops::{Add, Mul};
 
 use crate::bp_model::WorldEntity;
-use crate::pole_graph::PoleGraph;
+use crate::pole_graph::CandPoleGraph;
 use euclid::Vector2D;
 use petgraph::prelude::*;
 use plotters::coord::Shift;
@@ -47,9 +47,6 @@ impl Drawing {
             .to_i32()
             .to_tuple()
     }
-    pub fn map_tile_top_left(&self, pt: TilePosition) -> (i32, i32) {
-        self.map_pos(pt.corner_map_pos())
-    }
     pub fn map_bbox(&self, bbox: BoundingBox) -> [(i32, i32); 2] {
         [self.map_pos(bbox.min), self.map_pos(bbox.max)]
     }
@@ -87,7 +84,7 @@ impl Drawing {
 
     pub fn draw_pole_graph(
         &self,
-        graph: &PoleGraph,
+        graph: &CandPoleGraph,
         color: impl Color,
         width: f64,
     ) -> Result<(), Box<dyn std::error::Error>> {
