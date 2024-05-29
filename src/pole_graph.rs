@@ -9,74 +9,48 @@ use crate::bp_model::{BpModel, WorldEntity};
 use crate::position::{ContractMax, IterTiles, MapPosition, TileBoundingBox, TileSpaceExt};
 use crate::prototype_data::EntityPrototypeRef;
 
-#[derive(Debug, Clone)]
-pub struct CandPoleNode {
-    pub entity: WorldEntity,
-    pub powered_entities: HashSet<EntityId>,
-}
-
-impl Borrow<WorldEntity> for CandPoleNode {
-    fn borrow(&self) -> &WorldEntity {
-        &self.entity
-    }
-}
-
-pub type CandPoleGraph = UnGraph<CandPoleNode, f64>;
-
 pub type PoleGraph = UnGraph<WorldEntity, f64>;
 
 impl BpModel {
     /// A graph of all poles, with no connections between them.
-    pub fn get_disconnected_pole_graph(&self) -> (CandPoleGraph, HashMap<EntityId, NodeIndex>) {
-        let mut graph = CandPoleGraph::new_undirected();
+    pub fn get_disconnected_pole_graph(&self) -> (PoleGraph, HashMap<EntityId, NodeIndex>) {
+        let mut graph = PoleGraph::new_undirected();
         let mut id_map = HashMap::new();
-        for (id, entity) in self.all_entities() {
+        for entity in self.all_entities() {
             let pole_data = entity.pole_data();
             if pole_data.is_none() {
                 continue;
             }
-            let (pole_prototype, _) = pole_data.unwrap();
-            let idx = graph.add_node(CandPoleNode {
-                entity: entity.data.clone(),
-                powered_entities: self
-                    .powered_entities(entity.position, pole_prototype)
-                    .map(|e| e.id())
-                    .collect(),
-            });
-            id_map.insert(*id, idx);
+            let idx = graph.add_node(entity.entity.clone());
+            id_map.insert(entity.id(), idx);
         }
         (graph, id_map)
     }
 
     /// Graph of existing poles and connections.
-    #[allow(dead_code)]
-    pub fn get_current_pole_graph(&self) -> (CandPoleGraph, HashMap<EntityId, NodeIndex>) {
+    pub fn get_current_pole_graph(&self) -> (PoleGraph, HashMap<EntityId, NodeIndex>) {
         let (mut graph, id_map) = self.get_disconnected_pole_graph();
-        for (id, entity) in self.all_entities() {
+        for entity in self.all_entities() {
             let pole_data = entity.pole_data();
             if pole_data.is_none() {
                 continue;
             }
             let (_, connections) = pole_data.unwrap();
+            let id = &entity.id();
             let idx = id_map[id];
             for other_id in &connections.connections {
                 if other_id < id {
                     continue;
                 }
                 let other_idx = id_map[other_id];
-                let distance = graph[idx]
-                    .entity
-                    .position
-                    .distance_to(graph[other_idx].entity.position);
+                let distance = graph[idx].position.distance_to(graph[other_idx].position);
                 graph.add_edge(idx, other_idx, distance);
             }
         }
         (graph, id_map)
     }
 
-    pub fn get_maximally_connected_pole_graph(
-        &self,
-    ) -> (CandPoleGraph, HashMap<EntityId, NodeIndex>) {
+    pub fn get_maximally_connected_pole_graph(&self) -> (PoleGraph, HashMap<EntityId, NodeIndex>) {
         let (mut graph, id_map) = self.get_disconnected_pole_graph();
         self.maximally_connect_poles(&mut graph, &id_map);
         (graph, id_map)
@@ -87,12 +61,13 @@ impl BpModel {
         graph: &mut UnGraph<N, f64>,
         entity_map: &HashMap<EntityId, NodeIndex>,
     ) {
-        for (id, entity) in self.all_entities() {
+        for entity in self.all_entities() {
             let pole_data = entity.pole_data();
             if pole_data.is_none() {
                 continue;
             }
             let (pole_prototype, _) = pole_data.unwrap();
+            let id = &entity.id();
             let idx = entity_map[id];
             for other_entity in self
                 .connectable_poles(entity.position, pole_prototype)
@@ -107,6 +82,52 @@ impl BpModel {
             }
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct CandPoleNode {
+    pub entity: WorldEntity,
+    pub powered_entities: HashSet<EntityId>,
+}
+
+pub trait WithPosition {
+    fn position(&self) -> MapPosition;
+}
+impl WithPosition for WorldEntity {
+    fn position(&self) -> MapPosition {
+        self.position
+    }
+}
+impl WithPosition for CandPoleNode {
+    fn position(&self) -> MapPosition {
+        self.entity.position
+    }
+}
+
+pub type CandPoleGraph = UnGraph<CandPoleNode, f64>;
+
+pub trait ToCandidatePoleGraph {
+    fn to_cand_pole_graph(&self, model: &BpModel) -> CandPoleGraph;
+}
+impl ToCandidatePoleGraph for PoleGraph {
+    fn to_cand_pole_graph(&self, model: &BpModel) -> CandPoleGraph {
+        model.to_cand_pole_graph(self)
+    }
+}
+
+impl BpModel {
+    pub fn to_cand_pole_graph(&self, graph: &PoleGraph) -> CandPoleGraph {
+        graph.map(
+            |_, node| CandPoleNode {
+                entity: node.clone(),
+                powered_entities: self
+                    .powered_entities(node.position, node.prototype.pole_data.unwrap())
+                    .map(|e| e.id())
+                    .collect(),
+            },
+            |_, &w| w,
+        )
+    }
 
     /// Gets a new model which also contains all poles that may be placed in the given area.
     /// Candidate poles may overlap, if multiple prototypes are given.
@@ -114,10 +135,11 @@ impl BpModel {
     pub fn with_all_candidate_poles(
         &self,
         area: TileBoundingBox,
-        pole_prototypes: &[&EntityPrototypeRef],
+        pole_prototypes: &[impl Borrow<EntityPrototypeRef>],
     ) -> BpModel {
         let mut pole_model = self.clone();
-        for pole_prototype in pole_prototypes {
+        for pole_ref in pole_prototypes {
+            let pole_prototype = pole_ref.borrow();
             assert_eq!(
                 pole_prototype.tile_width, pole_prototype.tile_height,
                 "Non-square poles not supported yet"
@@ -158,14 +180,20 @@ impl BpModel {
             }
         }
     }
+
+    pub fn remove_all_poles(&mut self) {
+        self.retain(|e| !e.prototype.is_pole());
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::bp_model::test_util::small_pole_prototype;
     use euclid::point2;
     use itertools::Itertools;
+
+    use crate::bp_model::test_util::small_pole_prototype;
+
+    use super::*;
 
     #[test]
     fn test_pole_graph() {
@@ -176,20 +204,21 @@ mod tests {
         model.add_cable_connection(p1, p2);
         let e1 = model.add_test_powerable(point2(-2, 1));
 
-        let test_nodes_correct = |graph: &CandPoleGraph, idx_map: &HashMap<EntityId, NodeIndex>| {
+        let test_nodes_correct = |graph: &PoleGraph, idx_map: &HashMap<EntityId, NodeIndex>| {
+            let graph = model.to_cand_pole_graph(graph);
             assert_eq!(graph.node_count(), 3);
             assert_eq!(idx_map.len(), 3);
             let i1 = idx_map[&p1];
             let n1 = &graph[i1];
-            assert_eq!(n1.entity, model.get(p1).unwrap().data);
+            assert_eq!(n1.entity, model.get(p1).unwrap().entity);
             assert_eq!(n1.powered_entities, HashSet::from([e1]));
             let i2 = idx_map[&p2];
             let n2 = &graph[i2];
-            assert_eq!(n2.entity, model.get(p2).unwrap().data);
+            assert_eq!(n2.entity, model.get(p2).unwrap().entity);
             assert_eq!(n2.powered_entities, HashSet::new());
             let i3 = idx_map[&p3];
             let n3 = &graph[i3];
-            assert_eq!(n3.entity, model.get(p3).unwrap().data);
+            assert_eq!(n3.entity, model.get(p3).unwrap().entity);
             (i1, i2, i3)
         };
 

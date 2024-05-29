@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::ops::Deref;
 
 use factorio_blueprint::objects as fbp;
 use factorio_blueprint::objects::{
@@ -48,6 +49,42 @@ pub struct BlueprintEntityData {
     pub station: Option<String>,
     pub switch_state: bool,
     pub manual_trains_limit: Option<u32>,
+}
+
+impl BlueprintEntityData {
+    pub fn new(name: Prototype, position: MapPosition, direction: Option<u8>) -> Self {
+        Self {
+            name,
+            position,
+            direction,
+            orientation: None,
+            control_behavior: None,
+            items: None,
+            recipe: None,
+            bar: None,
+            inventory: None,
+            infinity_settings: None,
+            type_: None,
+            input_priority: None,
+            output_priority: None,
+            filter: None,
+            filters: None,
+            filter_mode: None,
+            override_stack_size: None,
+            drop_position: None,
+            pickup_position: None,
+            request_filters: None,
+            request_from_buffers: false,
+            parameters: None,
+            alert_parameters: None,
+            auto_launch: false,
+            variation: None,
+            color: None,
+            station: None,
+            switch_state: false,
+            manual_trains_limit: None,
+        }
+    }
 }
 
 trait SkipNone {
@@ -175,14 +212,15 @@ pub struct BlueprintEntity {
     pub neighbours: Option<HashSet<EntityId>>,
 }
 
-impl<'a> From<&'a BlueprintEntity> for &'a BlueprintEntityData {
-    fn from(entity: &'a BlueprintEntity) -> Self {
-        &entity.data
+impl Deref for BlueprintEntity {
+    type Target = BlueprintEntityData;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
     }
 }
-
 impl BlueprintEntity {
-    pub fn new(id: EntityId, data: BlueprintEntityData) -> Self {
+    fn new(id: EntityId, data: BlueprintEntityData) -> Self {
         Self {
             id,
             data,
@@ -190,9 +228,11 @@ impl BlueprintEntity {
             neighbours: None,
         }
     }
+    #[allow(dead_code)]
     pub fn id(&self) -> EntityId {
         self.id
     }
+    #[allow(dead_code)]
     pub fn connection_pt(&self, pt_id: bool) -> &ConnectionPoint {
         match pt_id {
             false => &self.connections.0,
@@ -211,6 +251,93 @@ impl BlueprintEntity {
 #[non_exhaustive]
 pub struct BlueprintEntities {
     pub entities: HashMap<EntityId, BlueprintEntity>,
+    next_entity_id: EntityId,
+}
+
+impl BlueprintEntities {
+    #[allow(dead_code)]
+    pub fn new() -> Self {
+        Self {
+            entities: Default::default(),
+            next_entity_id: EntityId(0),
+        }
+    }
+
+    pub fn add_entity(&mut self, data: BlueprintEntityData) -> EntityId {
+        let id = self.next_entity_id;
+        self.next_entity_id.0 += 1;
+        self.entities.insert(id, BlueprintEntity::new(id, data));
+        id
+    }
+
+    // /// still keeps connections to this entity. See also remove_invalid_connections
+    // pub fn remove(&mut self, id: EntityId) -> Option<BlueprintEntity> {
+    //     self.entities.remove(&id)
+    // }
+    // 
+    // pub fn remove_invalid_connections(&mut self) {
+    //     // rust borrow checker is a bit too strict here
+    //     let keys = self.entities.keys().copied().collect::<HashSet<_>>();
+    //     let remove_connections = |pt: &mut ConnectionPoint| {
+    //         if let Some(set) = &mut pt.0 {
+    //             set.retain(|conn| keys.contains(&conn.dest.entity_id));
+    //         }
+    //         pt.clear_if_empty();
+    //     };
+    //     for entity in (&mut self.entities).values_mut() {
+    //         if let Some(set) = &mut entity.neighbours {
+    //             set.retain(|id| keys.contains(id));
+    //         }
+    //         remove_connections(&mut entity.connections.0);
+    //         remove_connections(&mut entity.connections.1);
+    //     }
+    // }
+
+    pub fn has_id(&self, id: EntityId) -> bool {
+        self.entities.contains_key(&id)
+    }
+    
+    #[allow(dead_code)]
+    pub fn get(&self, id: EntityId) -> Option<&BlueprintEntity> {
+        self.entities.get(&id)
+    }
+    pub fn get_mut(&mut self, id: EntityId) -> Option<&mut BlueprintEntity> {
+        self.entities.get_mut(&id)
+    }
+
+    #[allow(dead_code)]
+    pub fn add_wire_connection(
+        &mut self,
+        p1: ConnectionPointId,
+        p2: ConnectionPointId,
+        color: WireColor,
+    ) -> bool {
+        if p1 == p2 || !self.has_id(p1.entity_id) || !self.has_id(p2.entity_id) {
+            return false;
+        }
+        let e1 = self.get_mut(p1.entity_id).unwrap();
+        e1.connection_pt_mut(p1.circuit_id)
+            .add_connection(OutgoingConnection { dest: p2, color });
+        let e2 = self.get_mut(p2.entity_id).unwrap();
+        e2.connection_pt_mut(p2.circuit_id)
+            .add_connection(OutgoingConnection { dest: p1, color });
+        true
+    }
+
+    pub fn add_cable_connection(&mut self, entity1: EntityId, entity2: EntityId) -> bool {
+        if entity1 == entity2 || !self.has_id(entity1) || !self.has_id(entity2) {
+            return false;
+        }
+        let e1 = self.entities.get_mut(&entity1).unwrap();
+        e1.neighbours
+            .get_or_insert_with(HashSet::new)
+            .insert(entity2);
+        let e2 = self.entities.get_mut(&entity2).unwrap();
+        e2.neighbours
+            .get_or_insert_with(HashSet::new)
+            .insert(entity1);
+        true
+    }
 }
 
 impl BlueprintEntities {
@@ -264,7 +391,12 @@ impl BlueprintEntities {
             })
             .collect();
 
-        let mut res = Self { entities };
+        let max_id = entities.keys().max().map(|id| id.0).unwrap_or(0);
+
+        let mut res = Self {
+            entities,
+            next_entity_id: EntityId(max_id + 1),
+        };
         for bp_entity in &bp.entities {
             if bp_entity.neighbours.is_none() {
                 continue;
@@ -332,7 +464,6 @@ impl BlueprintEntities {
         res
     }
 
-    #[allow(dead_code)]
     pub fn to_blueprint_entities(&self) -> Vec<fbp::Entity> {
         let mut sorted_entities = self.entities.values().collect::<Vec<_>>();
         sorted_entities.sort_by_key(|entity| entity.id);
@@ -403,10 +534,16 @@ impl BlueprintEntities {
                         let map_pts = |pts: &Vec<OutgoingConnection>| {
                             let vec: Vec<fbp::ConnectionData> = pts
                                 .iter()
-                                .map(|conn| fbp::ConnectionData {
-                                    entity_id: id_to_new[&conn.dest.entity_id],
-                                    circuit_id: if conn.dest.circuit_id { Some(2) } else { None },
-                                    wire_id: None,
+                                .filter_map(|conn| {
+                                    Some(fbp::ConnectionData {
+                                        entity_id: *id_to_new.get(&conn.dest.entity_id)?,
+                                        circuit_id: if conn.dest.circuit_id {
+                                            Some(2)
+                                        } else {
+                                            None
+                                        },
+                                        wire_id: None,
+                                    })
                                 })
                                 .sorted_by_key(|conn| (conn.entity_id, conn.circuit_id))
                                 .collect();
@@ -445,10 +582,13 @@ impl BlueprintEntities {
                         }
                     }
                 },
-                neighbours: old_entity
-                    .neighbours
-                    .as_ref()
-                    .map(|neigh| neigh.iter().map(|id| id_to_new[id]).sorted().collect()),
+                neighbours: old_entity.neighbours.as_ref().map(|neigh| {
+                    neigh
+                        .iter()
+                        .filter_map(|id| id_to_new.get(id).cloned())
+                        .sorted()
+                        .collect()
+                }),
             })
             .collect();
 
@@ -456,57 +596,12 @@ impl BlueprintEntities {
     }
 }
 
-impl BlueprintEntities {
-    pub fn has_id(&self, id: EntityId) -> bool {
-        self.entities.contains_key(&id)
-    }
-
-    #[allow(dead_code)]
-    pub fn add_wire_connection(
-        &mut self,
-        p1: ConnectionPointId,
-        p2: ConnectionPointId,
-        color: WireColor,
-    ) -> bool {
-        if p1 == p2 || !self.has_id(p1.entity_id) || !self.has_id(p2.entity_id) {
-            return false;
-        }
-        let e1 = self.get_mut(p1.entity_id).unwrap();
-        e1.connection_pt_mut(p1.circuit_id)
-            .add_connection(OutgoingConnection { dest: p2, color });
-        let e2 = self.get_mut(p2.entity_id).unwrap();
-        e2.connection_pt_mut(p2.circuit_id)
-            .add_connection(OutgoingConnection { dest: p1, color });
-        true
-    }
-
-    pub fn add_cable_connection(&mut self, entity1: EntityId, entity2: EntityId) -> bool {
-        if entity1 == entity2 || !self.has_id(entity1) || !self.has_id(entity2) {
-            return false;
-        }
-        let e1 = self.entities.get_mut(&entity1).unwrap();
-        e1.neighbours
-            .get_or_insert_with(HashSet::new)
-            .insert(entity2);
-        let e2 = self.entities.get_mut(&entity2).unwrap();
-        e2.neighbours
-            .get_or_insert_with(HashSet::new)
-            .insert(entity1);
-        true
-    }
-
-    fn get(&self, id: EntityId) -> Option<&BlueprintEntity> {
-        self.entities.get(&id)
-    }
-    fn get_mut(&mut self, id: EntityId) -> Option<&mut BlueprintEntity> {
-        self.entities.get_mut(&id)
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use euclid::point2;
     use std::collections::HashSet;
 
+    use super::*;
     use factorio_blueprint::{BlueprintCodec, Container};
 
     #[test]
@@ -517,7 +612,7 @@ mod tests {
             _ => panic!("not a blueprint"),
         };
 
-        let entities = crate::better_bp::BlueprintEntities::from_blueprint(&bp);
+        let entities = BlueprintEntities::from_blueprint(&bp);
         let new_bp = entities.to_blueprint_entities();
 
         for (new, old) in new_bp.iter().zip(bp.entities.iter()) {
@@ -561,5 +656,20 @@ mod tests {
                 .map(|a| a.iter().collect::<HashSet<_>>());
             assert_eq!(a, b);
         }
+    }
+
+    #[test]
+    fn test_add_get_entity() {
+        let mut entities = BlueprintEntities::new();
+        let id = entities.add_entity(BlueprintEntityData::new(
+            "test".into(),
+            point2(0.0, 0.0),
+            None,
+        ));
+        assert!(entities.has_id(id));
+        let entity = entities.get(id);
+        assert!(entity.is_some());
+        assert_eq!(entity.unwrap().id, id,);
+        assert_eq!(entity.unwrap().data.name, "test".to_string());
     }
 }

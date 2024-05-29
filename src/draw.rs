@@ -1,50 +1,55 @@
 use std::ops::{Add, Mul};
 
-use crate::bp_model::WorldEntity;
-use crate::pole_graph::CandPoleGraph;
-use euclid::Vector2D;
+use euclid::{vec2, Vector2D};
 use petgraph::prelude::*;
 use plotters::coord::Shift;
 use plotters::prelude::*;
 
+use crate::bp_model::{BpModel, WorldEntity};
+use crate::pole_graph::WithPosition;
 use crate::position::*;
 
-static POLE_COLOR: HSLColor = HSLColor(0.02, 0.95, 0.55);
-static BLOCKER_COLOR: HSLColor = HSLColor(0.6, 0.95, 0.55);
-static POWERABLE_COLOR: HSLColor = HSLColor(0.3, 0.95, 0.55);
+static POLE_COLOR: HSLColor = HSLColor(0.02, 0.95, 0.4);
+static BLOCKER_COLOR: RGBColor = RGBColor(0, (0.38 * 255.0) as u8, (0.57 * 255.0) as u8);
+static POWERABLE_COLOR: HSLColor = HSLColor(0.3, 0.8, 0.35);
+static BACKGROUND_COLOR: RGBColor = RGBColor(80, 80, 90);
+static POLE_GRAPH_COLOR: RGBColor = RGBColor(20, 212, 255);
 
-pub struct Drawing {
-    pub area: DrawingArea<BitMapBackend<'static>, Shift>,
-    pub pixel_size: (u32, u32),
-    pub shift: Vector2D<f64, MapSpace>,
-    pub scale: f64,
+pub struct Drawing<'a> {
+    pub area: DrawingArea<BitMapBackend<'a>, Shift>,
+    // dimensions: (u32, u32),
+    tile_shift: Vector2D<f64, MapSpace>,
+    scale: i32,
+    padding: i32,
 }
 
-impl Drawing {
+impl <'a> Drawing<'a> {
     pub fn on_area(
-        name: &'static str,
+        name: &'a impl AsRef<std::path::Path>,
         area: TileBoundingBox,
-        size: u32,
-    ) -> Result<Drawing, Box<dyn std::error::Error>> {
-        let pixel_size = (size, size);
-        let shift = area.min.corner_map_pos().to_vector();
-        let area_size = area.size();
-        let scale = size as f64 / (area_size.width.max(area_size.height) as f64);
-        let root = BitMapBackend::new(name, pixel_size).into_drawing_area();
-        root.fill(&WHITE)?;
+        pixels_per_tile: i32,
+        padding: i32,
+    ) -> Result<Drawing<'a>, Box<dyn std::error::Error>> {
+        let tile_shift = area.min.corner_map_pos().to_vector();
+        let size = (area.size() * pixels_per_tile).to_vector() + vec2(padding, padding) * 2;
+        let dim = size.to_u32().to_tuple();
+        let root = BitMapBackend::<'a,_>::new(name, dim).into_drawing_area();
+        root.fill(&BACKGROUND_COLOR)?;
+
         Ok(Drawing {
             area: root,
-            pixel_size,
-            shift,
-            scale,
+            tile_shift,
+            scale: pixels_per_tile,
+            padding,
         })
     }
 
     pub fn map_pos(&self, pt: MapPosition) -> (i32, i32) {
-        pt.add(-self.shift)
-            .mul(self.scale)
+        pt.add(-self.tile_shift)
+            .mul(self.scale as f64)
             .round()
             .to_i32()
+            .add(vec2(self.padding, self.padding))
             .to_tuple()
     }
     pub fn map_bbox(&self, bbox: BoundingBox) -> [(i32, i32); 2] {
@@ -55,26 +60,26 @@ impl Drawing {
         let bounds = self.map_bbox(entity.world_bbox().round_out());
 
         let color = match entity.prototype.pole_data {
-            Some(_) => POLE_COLOR,
+            Some(_) => POLE_COLOR.to_rgba(),
             None => {
                 if entity.uses_power() {
-                    POWERABLE_COLOR
+                    POWERABLE_COLOR.to_rgba()
                 } else {
-                    BLOCKER_COLOR
+                    BLOCKER_COLOR.to_rgba()
                 }
             }
         };
         self.area.draw(&Rectangle::new(bounds, color.filled()))?;
         self.area.draw(&Rectangle::new(
             bounds,
-            BLACK.stroke_width((0.1 * self.scale).ceil() as u32),
+            BLACK.stroke_width((0.1 * self.scale as f64).ceil() as u32),
         ))?;
         Ok(())
     }
 
-    pub fn draw_all_entities<'a>(
+    pub fn draw_all_entities<'b>(
         &self,
-        entities: impl IntoIterator<Item = &'a WorldEntity>,
+        entities: impl IntoIterator<Item = &'b WorldEntity>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         for entity in entities {
             self.draw_entity(entity)?;
@@ -82,21 +87,26 @@ impl Drawing {
         Ok(())
     }
 
-    pub fn draw_pole_graph(
+    pub fn draw_pole_graph<N: WithPosition, E>(
         &self,
-        graph: &CandPoleGraph,
-        color: impl Color,
+        graph: &UnGraph<N, E>,
         width: f64,
     ) -> Result<(), Box<dyn std::error::Error>> {
         for edge in graph.edge_references() {
             let (from, to) = graph.edge_endpoints(edge.id()).unwrap();
-            let from = self.map_pos(graph[from].entity.position);
-            let to = self.map_pos(graph[to].entity.position);
+            let from = self.map_pos(graph[from].position());
+            let to = self.map_pos(graph[to].position());
             self.area.draw(&PathElement::new(
                 vec![from, to],
-                color.stroke_width((width * self.scale).ceil() as u32),
+                POLE_GRAPH_COLOR.stroke_width((width * self.scale as f64).ceil() as u32),
             ))?;
         }
+        Ok(())
+    }
+
+    pub fn draw_model(&self, model: &BpModel) -> Result<(), Box<dyn std::error::Error>> {
+        self.draw_all_entities(model.all_entities().map(|e| &e.entity))?;
+        self.draw_pole_graph(&model.get_current_pole_graph().0, 0.2)?;
         Ok(())
     }
 

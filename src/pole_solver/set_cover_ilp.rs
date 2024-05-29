@@ -3,24 +3,27 @@ use std::error::Error;
 
 use good_lp::variable::UnsolvedProblem;
 use good_lp::*;
+use good_lp::solvers::highs::{HighsProblem};
 use hashbrown::HashSet;
 use itertools::Itertools;
+use log::warn;
 use petgraph::prelude::*;
 
 use crate::pole_graph::CandPoleGraph;
 use crate::pole_solver::{get_pole_coverage_dict, PoleCoverSolver};
-use crate::position::BoundingBox;
+use crate::position::{BoundingBox, BoundingBoxExt};
 
-type CostFN = Box<dyn Fn(&CandPoleGraph, NodeIndex) -> f64>;
-pub struct SetCoverILPSolver<M: SolverModel> {
-    pub solver: fn(UnsolvedProblem) -> M,
-    pub config: fn(M) -> Result<M, Box<dyn Error>>,
-    pub cost: CostFN,
+type M = HighsProblem;
+
+pub struct SetCoverILPSolver<'a> {
+    pub solver: &'a dyn Fn(UnsolvedProblem) -> M,
+    pub config: &'a dyn Fn(M) -> Result<M, Box<dyn Error>>,
+    pub cost: &'a dyn Fn(&CandPoleGraph, NodeIndex) -> f64,
     pub connectivity: Option<DistanceConnectivity>,
 }
 
-/// A heuristic constraint generator to ensures that poles are connected.
-///
+/// A constraint to ensures that poles are connected. Might not be optimal.
+/// 
 /// The idea/heuristic is that every pole must be connected to some pole more "central" to it.
 ///
 /// Some "root" poles are selected based on the root_location; then distance to all other poles is calculated.
@@ -28,17 +31,10 @@ pub struct SetCoverILPSolver<M: SolverModel> {
 ///
 /// This currently uses Euclidean distance as the distance metric.
 pub struct DistanceConnectivity {
-    pub root_location: (f64, f64),
+    pub center_rel_pos: (f64, f64),
 }
 
 impl DistanceConnectivity {
-    /// With default root location, at the center of the bounding box.
-    pub fn default() -> Self {
-        Self {
-            root_location: (0.5, 0.5),
-        }
-    }
-
     fn maximal_clique(
         graph: &CandPoleGraph,
         nodes: impl IntoIterator<Item = NodeIndex>,
@@ -54,7 +50,7 @@ impl DistanceConnectivity {
 
     pub fn find_root_poles(&self, graph: &CandPoleGraph) -> Vec<NodeIndex> {
         let bbox = BoundingBox::from_points(graph.node_weights().map(|p| p.entity.position));
-        let pt = bbox.min + (bbox.max - bbox.min).component_mul(self.root_location.into());
+        let pt = bbox.relative_pt_at(self.center_rel_pos);
         let closest_poles = graph.node_indices().sorted_by_cached_key(|idx| {
             ((graph[*idx].entity.position - pt).square_length() * 64.0 * 64.0).round() as u64
         });
@@ -80,12 +76,14 @@ impl DistanceConnectivity {
             }
         });
         let mut result = vec![];
+        let mut connected = true;
         for pole in pole_vars.keys() {
             if root_poles.contains(pole) {
                 continue;
             }
             let this_dist = distances.get(pole).cloned();
             if this_dist.is_none() {
+                connected = false;
                 continue;
             }
             let neighbors = graph
@@ -98,14 +96,14 @@ impl DistanceConnectivity {
                 result.push(constraint!(pole_vars[pole] <= var_sum));
             }
         }
+        if !connected {
+            warn!("The pole graph is not connected!");
+        }
         result
     }
 }
 
-impl<M: SolverModel> SetCoverILPSolver<M>
-where
-    <M as SolverModel>::Solution: Solution,
-{
+impl SetCoverILPSolver<'_> {
     fn add_set_cover_constraints(
         &self,
         graph: &CandPoleGraph,
@@ -121,8 +119,8 @@ where
     }
 }
 
-impl<M: SolverModel> PoleCoverSolver for SetCoverILPSolver<M> {
-    fn solve(&self, graph: &CandPoleGraph) -> Result<CandPoleGraph, Box<dyn Error + '_>> {
+impl PoleCoverSolver for SetCoverILPSolver<'_> {
+    fn solve<'a>(&self, graph: &CandPoleGraph) -> Result<CandPoleGraph, Box<dyn Error + 'a>> {
         let mut vars = ProblemVariables::new();
 
         let pole_vars = graph
@@ -176,6 +174,7 @@ mod test {
 
     use crate::bp_model::test_util::small_pole_prototype;
     use crate::bp_model::BpModel;
+    use crate::pole_graph::ToCandidatePoleGraph;
 
     use super::*;
 
@@ -186,14 +185,16 @@ mod test {
         let e2 = model.add_test_powerable(point2(2, 1));
         let e3 = model.add_test_powerable(point2(6, 2));
 
-        let (graph, _) = model
+        let graph = model
             .with_all_candidate_poles(model.get_bounding_box(), &[&small_pole_prototype()])
-            .get_maximally_connected_pole_graph();
+            .get_maximally_connected_pole_graph()
+            .0
+            .to_cand_pole_graph(&model);
 
         let solver = SetCoverILPSolver {
-            solver: default_solver,
-            config: Ok,
-            cost: Box::new(|_, _| 1.0),
+            solver: &highs,
+            config: &Ok,
+            cost: &|_, _| 1.0,
             connectivity: None,
         };
         let subgraph = solver.solve(&graph).unwrap();

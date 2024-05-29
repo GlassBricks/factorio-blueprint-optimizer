@@ -1,19 +1,23 @@
+use std::error::Error;
+
 use hashbrown::{HashMap, HashSet};
 use petgraph::prelude::*;
 
-mod set_cover_ilp;
-mod cbc_allow_partial;
-mod min_scored;
+pub use connections::*;
+pub use set_cover_ilp::*;
 
 use crate::better_bp::EntityId;
 use crate::pole_graph::CandPoleGraph;
-pub use set_cover_ilp::*;
-use std::error::Error;
+
+mod cbc_allow_partial;
+mod connections;
+mod min_scored;
+mod set_cover_ilp;
 
 /// A solver for the pole cover problem: given a pole graph, find a subgraph
 /// of poles that still powers all entities and has the minimum cost.
 pub trait PoleCoverSolver {
-    fn solve(&self, graph: &CandPoleGraph) -> Result<CandPoleGraph, Box<dyn Error + '_>>;
+    fn solve<'a>(&self, graph: &CandPoleGraph) -> Result<CandPoleGraph, Box<dyn Error + 'a>>;
 }
 
 pub fn get_pole_coverage_dict(graph: &CandPoleGraph) -> HashMap<EntityId, HashSet<NodeIndex>> {
@@ -36,6 +40,7 @@ mod tests {
     use hashbrown::HashSet;
 
     use crate::bp_model::BpModel;
+    use crate::pole_graph::ToCandidatePoleGraph;
 
     #[test]
     fn test_get_pole_coverage_dict() {
@@ -47,6 +52,7 @@ mod tests {
         let e3 = model.add_test_powerable(point2(6, 2));
 
         let (graph, idx_map) = model.get_maximally_connected_pole_graph();
+        let graph = graph.to_cand_pole_graph(&model);
         let entity_coverage = super::get_pole_coverage_dict(&graph);
         assert_eq!(entity_coverage.len(), 3);
 

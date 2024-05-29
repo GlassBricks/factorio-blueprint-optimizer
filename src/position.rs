@@ -40,6 +40,7 @@ impl IterTiles for BoundingBox {
 pub trait TileSpaceExt {
     /// Returns the center of the tile in map coordinates.
     #[must_use]
+    #[allow(dead_code)]
     fn center_map_pos(self) -> MapPosition;
 
     fn corner_map_pos(self) -> MapPosition;
@@ -64,9 +65,10 @@ impl<T: Sub<Output = T> + Copy, U> ContractMax<T> for Box2D<T, U> {
     }
 }
 
-trait MapPositionExt {
+pub trait MapPositionExt {
     /// the tile position this map position is in. Rounds down.
     #[must_use]
+    #[allow(dead_code)]
     fn tile_pos(&self) -> TilePosition;
 }
 impl MapPositionExt for MapPosition {
@@ -83,6 +85,9 @@ pub trait BoundingBoxExt {
 
     #[must_use]
     fn around_point(center: MapPosition, radius: f64) -> Self;
+    
+     #[must_use]
+     fn relative_pt_at(&self, rel: (f64, f64)) -> MapPosition;
 }
 
 impl BoundingBoxExt for BoundingBox {
@@ -100,6 +105,10 @@ impl BoundingBoxExt for BoundingBox {
     fn around_point(center: MapPosition, radius: f64) -> Self {
         let vec = vec2(radius, radius);
         Box2D::new(center - vec, center + vec)
+    }
+
+    fn relative_pt_at(&self, rel: (f64, f64)) -> MapPosition {
+        self.min + vec2(rel.0, rel.1).component_mul(self.max - self.min)
     }
 }
 

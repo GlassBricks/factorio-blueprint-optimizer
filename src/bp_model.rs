@@ -37,7 +37,7 @@ impl WorldEntity {
 }
 
 impl WorldEntity {
-    pub fn from_bp_entity(
+    fn from_bp_entity(
         prototype_dict: &EntityPrototypeDict,
         bp_entity: &BlueprintEntityData,
     ) -> Self {
@@ -51,7 +51,7 @@ impl WorldEntity {
 
 #[derive(Debug, Clone)]
 pub struct ModelEntity {
-    pub data: WorldEntity,
+    pub entity: WorldEntity,
     id: EntityId,
     extra: EntityExtraData,
 }
@@ -59,7 +59,7 @@ pub struct ModelEntity {
 impl Deref for ModelEntity {
     type Target = WorldEntity;
     fn deref(&self) -> &WorldEntity {
-        &self.data
+        &self.entity
     }
 }
 impl ModelEntity {
@@ -80,23 +80,30 @@ pub struct PoleConnections {
     pub connections: HashSet<EntityId>,
 }
 impl ModelEntity {
-    fn new_empty(id: EntityId, data: WorldEntity) -> Self {
+    fn new_empty(id: EntityId, entity: WorldEntity) -> Self {
         ModelEntity {
             id,
-            extra: if data.prototype.pole_data.is_some() {
+            extra: if entity.prototype.pole_data.is_some() {
                 EntityExtraData::Pole(PoleConnections {
                     connections: HashSet::new(),
                 })
             } else {
                 EntityExtraData::None
             },
-            data,
+            entity,
         }
     }
 
     pub fn pole_data(&self) -> Option<(PoleData, &PoleConnections)> {
         match &self.extra {
             EntityExtraData::Pole(pole) => Some((self.prototype.pole_data.unwrap(), pole)),
+            _ => None,
+        }
+    }
+
+    fn pole_connections(&self) -> Option<&PoleConnections> {
+        match &self.extra {
+            EntityExtraData::Pole(pole) => Some(pole),
             _ => None,
         }
     }
@@ -228,16 +235,16 @@ impl BpModel {
         self.by_tile.contains_key(&tile)
     }
 
-    pub fn by_tile(&self) -> &HashMap<TilePosition, Vec<EntityId>> {
-        &self.by_tile
-    }
-    pub fn all_entities(&self) -> &HashMap<EntityId, ModelEntity> {
-        &self.all_entities
+    pub fn all_entities(&self) -> impl Iterator<Item = &ModelEntity> + '_ {
+        self.all_entities.values()
     }
 
+    #[allow(dead_code)]
     pub fn get(&self, id: EntityId) -> Option<&ModelEntity> {
         self.all_entities.get(&id)
     }
+    
+    #[allow(dead_code)]
     pub fn get_mut(&mut self, id: EntityId) -> Option<&mut ModelEntity> {
         self.all_entities.get_mut(&id)
     }
@@ -249,10 +256,6 @@ impl BpModel {
             .unwrap_or(&[])
             .iter()
             .map(move |id| &self.all_entities[id])
-    }
-
-    pub fn all_world_entities(&self) -> impl Iterator<Item = &WorldEntity> {
-        self.all_entities.values().map(|entity| &entity.data)
     }
 
     pub fn get_bounding_box(&self) -> TileBoundingBox {
@@ -293,6 +296,39 @@ impl BpModel {
             .flat_map(|tile| self.get_at_tile(tile))
             .filter(|entity| entity.uses_power())
             .unique_by(|entity| entity.id)
+    }
+}
+
+impl BlueprintEntities {
+    pub fn add_poles_from(&mut self, model: &BpModel) -> HashMap<EntityId, EntityId> {
+        let id_map = model
+            .all_entities()
+            .filter(|entity| entity.prototype.pole_data.is_some())
+            .map(|entity| {
+                (
+                    entity.id,
+                    self.add_entity(BlueprintEntityData::new(
+                        entity.prototype.name.clone(),
+                        entity.position,
+                        Some(entity.direction).filter(|&x| x != 0),
+                    )),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        for entity in model.all_entities() {
+            if let Some(pole) = entity.pole_connections() {
+                let bp_entity = self.get_mut(id_map[&entity.id]).unwrap();
+                let connections = pole
+                    .connections
+                    .iter()
+                    .filter_map(|id| id_map.get(id))
+                    .copied()
+                    .collect();
+                bp_entity.neighbours = Some(connections);
+            }
+        }
+        
+        id_map
     }
 }
 
@@ -337,6 +373,12 @@ pub mod test_util {
                 direction: 0,
             })
         }
+        pub fn add_test_poles(&mut self, positions: &[TilePosition]) -> Vec<EntityId> {
+            positions
+                .iter()
+                .map(|&pos| self.add_test_pole(pos))
+                .collect()
+        }
         pub fn add_test_powerable(&mut self, position: TilePosition) -> EntityId {
             self.add_overlap(WorldEntity {
                 position: position.center_map_pos(),
@@ -376,7 +418,7 @@ mod tests {
         };
         let entity_id = grid.add_overlap(entity.clone());
         let at0 = grid.get_at_tile(point2(0, 0)).next();
-        assert_eq!(at0.unwrap().data, entity);
+        assert_eq!(at0.unwrap().entity, entity);
         assert!(grid.get_at_tile(point2(1, 0)).next().is_none());
         assert!(grid.get_at_tile(point2(0, 1)).next().is_none());
 
@@ -435,5 +477,28 @@ mod tests {
             .map(|entity| entity.id)
             .collect_vec();
         assert_eq!(connectable2, vec![pole2]);
+    }
+
+    #[test]
+    fn test_add_poles_from() {
+        let mut model = BpModel::new();
+        let pole1 = model.add_test_pole(point2(0, 0));
+        let pole2 = model.add_test_pole(point2(1, 0));
+        let pole3 = model.add_test_pole(point2(0, 1));
+        model.add_cable_connection(pole1, pole2);
+        model.add_cable_connection(pole2, pole3);
+        let mut bp = BlueprintEntities::new();
+        let id_map = bp.add_poles_from(&model);
+        let i1 = id_map[&pole1];
+        let i2 = id_map[&pole2];
+        let i3 = id_map[&pole3];
+        let pole1 = bp.get(i1).unwrap();
+        let pole2 = bp.get(i2).unwrap();
+        let pole3 = bp.get(i3).unwrap();
+        
+        use std::collections::HashSet;
+        assert_eq!(pole1.neighbours, Some(HashSet::from([i2])));
+        assert_eq!(pole2.neighbours, Some(HashSet::from([i1, i3])));
+        assert_eq!(pole3.neighbours, Some(HashSet::from([i2])));
     }
 }
