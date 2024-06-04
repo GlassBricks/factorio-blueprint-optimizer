@@ -25,6 +25,7 @@ mod bp_model;
 mod draw;
 mod pole_graph;
 mod pole_solver;
+mod pole_windows;
 mod position;
 mod prototype_data;
 mod rcid;
@@ -76,7 +77,7 @@ struct OptimizePoles {
         help = "Cost for each pole type; format: 'name=cost' separated by commas. Default is 1 for all poles. Can use aliases: s, m, b, t"
     )]
     pole_costs: Option<String>,
-    
+
     #[arg(
         short = 'E',
         long,
@@ -250,6 +251,7 @@ fn optimize_poles(
         score + (entity.position - center).length() / 10000.0 * args.distance_cost
     };
 
+    println!("Solving ILP");
     let solver = SetCoverILPSolver {
         solver: &highs,
         config: &|mut model| {
@@ -331,7 +333,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             .with_extension("txt")
     });
 
+    println!("Reading from {:?}", in_file);
     let bp = read_blueprint(in_file)?;
+    println!("Read blueprint with {} entities", bp.entities.len());
 
     let mut result = match args.command {
         Command::Optimize(opt) => optimize_poles(bp, &opt)?,

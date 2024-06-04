@@ -72,7 +72,7 @@ impl DistanceConnectivity {
             if root_poles.contains(&edge.target()) {
                 0.0
             } else {
-                *edge.weight() + 3.0
+                *edge.weight()
             }
         });
         let mut result = vec![];

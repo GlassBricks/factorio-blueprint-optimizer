@@ -1,12 +1,16 @@
 use std::borrow::Borrow;
+
 use euclid::vec2;
 use hashbrown::{HashMap, HashSet};
-use itertools::Itertools;
 use petgraph::prelude::*;
 
 use crate::better_bp::EntityId;
 use crate::bp_model::{BpModel, WorldEntity};
-use crate::position::{ContractMax, IterTiles, MapPosition, TileBoundingBox, TileSpaceExt};
+use crate::pole_windows::{PoleCoverageWindows, WireReachWindows};
+use crate::position::{
+    ContractMax, IterTiles, MapPosition, TileBoundingBox,
+    TileSpaceExt,
+};
 use crate::prototype_data::EntityPrototypeRef;
 
 pub type PoleGraph = UnGraph<WorldEntity, f64>;
@@ -61,22 +65,25 @@ impl BpModel {
         graph: &mut UnGraph<N, f64>,
         entity_map: &HashMap<EntityId, NodeIndex>,
     ) {
-        for entity in self.all_entities() {
+        let mut windows = WireReachWindows::new(self);
+        for entity in self.all_entities_grid_order() {
             let pole_data = entity.pole_data();
             if pole_data.is_none() {
                 continue;
             }
-            let (pole_prototype, _) = pole_data.unwrap();
-            let id = &entity.id();
-            let idx = entity_map[id];
-            for other_entity in self
-                .connectable_poles(entity.position, pole_prototype)
-                .collect_vec()
-            {
-                if other_entity.id() <= entity.id() {
+            let (pole_data, _) = pole_data.unwrap();
+            let window = windows.get_window_for(entity);
+            let id = entity.id();
+            let idx = entity_map[&id];
+            for &other_id in window.cur_items() {
+                if other_id <= id {
                     continue;
                 }
-                let other_idx = entity_map[&other_entity.id()];
+                let other_entity = self.get(other_id).unwrap();
+                if !self.is_connectable_pole(entity.position, pole_data, other_entity) {
+                    continue;
+                }
+                let other_idx = entity_map[&other_id];
                 let distance = entity.position.distance_to(other_entity.position);
                 graph.update_edge(idx, other_idx, distance);
             }
@@ -117,12 +124,15 @@ impl ToCandidatePoleGraph for PoleGraph {
 
 impl BpModel {
     pub fn to_cand_pole_graph(&self, graph: &PoleGraph) -> CandPoleGraph {
+        let mut windows = PoleCoverageWindows::new(self);
         graph.map(
             |_, node| CandPoleNode {
                 entity: node.clone(),
-                powered_entities: self
-                    .powered_entities(node.position, node.prototype.pole_data.unwrap())
-                    .map(|e| e.id())
+                powered_entities: windows
+                    .get_window_for(node)
+                    .cur_items()
+                    .filter(|id| self.get(**id).is_some_and(|e| e.uses_power()))
+                    .copied()
                     .collect(),
             },
             |_, &w| w,

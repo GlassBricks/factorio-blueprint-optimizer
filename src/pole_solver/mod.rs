@@ -9,7 +9,6 @@ pub use set_cover_ilp::*;
 use crate::better_bp::EntityId;
 use crate::pole_graph::CandPoleGraph;
 
-mod cbc_allow_partial;
 mod connections;
 mod min_scored;
 mod set_cover_ilp;

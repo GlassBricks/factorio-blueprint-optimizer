@@ -96,7 +96,10 @@ impl ModelEntity {
 
     pub fn pole_data(&self) -> Option<(PoleData, &PoleConnections)> {
         match &self.extra {
-            EntityExtraData::Pole(pole) => Some((self.prototype.pole_data.unwrap(), pole)),
+            EntityExtraData::Pole(pole) => Some((
+                self.prototype.pole_data.unwrap(),
+                pole,
+            )),
             _ => None,
         }
     }
@@ -116,7 +119,7 @@ impl ModelEntity {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BpModel {
     by_tile: HashMap<TilePosition, Vec<EntityId>>,
     all_entities: HashMap<EntityId, ModelEntity>,
@@ -238,12 +241,19 @@ impl BpModel {
     pub fn all_entities(&self) -> impl Iterator<Item = &ModelEntity> + '_ {
         self.all_entities.values()
     }
+    
+    pub fn all_entities_grid_order(&self) -> impl Iterator<Item = &ModelEntity> + '_ {
+        self.by_tile.iter()
+            .sorted_by_key(|(pos, _)| pos.to_tuple())
+            .flat_map(|(_, ids)| ids)
+            .unique()
+            .map(|id| &self.all_entities[id])
+    }
 
-    #[allow(dead_code)]
     pub fn get(&self, id: EntityId) -> Option<&ModelEntity> {
         self.all_entities.get(&id)
     }
-    
+
     #[allow(dead_code)]
     pub fn get_mut(&mut self, id: EntityId) -> Option<&mut ModelEntity> {
         self.all_entities.get_mut(&id)
@@ -263,23 +273,30 @@ impl BpModel {
         TileBoundingBox::new(bbox.min, bbox.max + vec2(1, 1))
     }
 
+    pub fn is_connectable_pole(
+        &self,
+        pole_pos: MapPosition,
+        pole_data: PoleData,
+        target_entity: &WorldEntity,
+    ) -> bool {
+        const EPS: f64 = 1e-6;
+        target_entity.prototype.pole_data.is_some_and(|pd| {
+            let max_dist = pole_data.wire_distance.min(pd.wire_distance);
+            (pole_pos - target_entity.position).square_length() <= max_dist * max_dist + EPS
+        })
+    }
+
     pub fn connectable_poles(
         &self,
         pole_pos: MapPosition,
         pole_data: PoleData,
     ) -> impl Iterator<Item = &ModelEntity> + '_ {
         let this_dist = pole_data.wire_distance;
-        const EPS: f64 = 1e-6;
         BoundingBox::around_point(pole_pos, this_dist)
             .round_to_tiles_covering_center()
             .iter_tiles()
             .flat_map(|tile| self.get_at_tile(tile))
-            .filter(move |entity| {
-                entity.prototype.pole_data.is_some_and(|pd| {
-                    let max_dist = this_dist.min(pd.wire_distance);
-                    (pole_pos - entity.position).square_length() <= max_dist * max_dist + EPS
-                })
-            })
+            .filter(move |entity| self.is_connectable_pole(pole_pos, pole_data, entity))
             .unique_by(|entity| entity.id)
     }
 
@@ -327,7 +344,7 @@ impl BlueprintEntities {
                 bp_entity.neighbours = Some(connections);
             }
         }
-        
+
         id_map
     }
 }
@@ -391,10 +408,11 @@ pub mod test_util {
 
 #[cfg(test)]
 mod tests {
-    use super::test_util::*;
-    use super::*;
     use crate::prototype_data::EntityPrototype;
     use crate::rcid::RcId;
+
+    use super::*;
+    use super::test_util::*;
 
     fn entity_data(uses_power: bool) -> EntityPrototypeRef {
         RcId::new(EntityPrototype {
@@ -495,7 +513,7 @@ mod tests {
         let pole1 = bp.get(i1).unwrap();
         let pole2 = bp.get(i2).unwrap();
         let pole3 = bp.get(i3).unwrap();
-        
+
         use std::collections::HashSet;
         assert_eq!(pole1.neighbours, Some(HashSet::from([i2])));
         assert_eq!(pole2.neighbours, Some(HashSet::from([i1, i3])));
