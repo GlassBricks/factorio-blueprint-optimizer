@@ -9,7 +9,7 @@ use petgraph::unionfind::UnionFind;
 use petgraph::visit::{IntoNodeReferences, NodeIndexable};
 
 use crate::pole_graph::WithPosition;
-use crate::pole_solver::min_scored::MinScored;
+use crate::algorithms::min_scored::MinScored;
 use crate::position::MapPosition;
 
 /// Given a pole graph, gets a graph with a subset of edges that looks nice.
@@ -213,7 +213,6 @@ mod tests {
     use euclid::point2;
 
     use crate::bp_model::BpModel;
-    use crate::pole_solver::PrettyPoleConnector;
     use crate::position::TilePosition;
 
     use super::*;

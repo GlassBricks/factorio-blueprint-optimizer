@@ -1,16 +1,16 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 
+use super::{get_pole_coverage_dict, PoleCoverSolver};
+use good_lp::solvers::highs::HighsProblem;
 use good_lp::variable::UnsolvedProblem;
 use good_lp::*;
-use good_lp::solvers::highs::{HighsProblem};
 use hashbrown::HashSet;
 use itertools::Itertools;
 use log::warn;
 use petgraph::prelude::*;
 
 use crate::pole_graph::CandPoleGraph;
-use crate::pole_solver::{get_pole_coverage_dict, PoleCoverSolver};
 use crate::position::{BoundingBox, BoundingBoxExt};
 
 type M = HighsProblem;
@@ -23,7 +23,7 @@ pub struct SetCoverILPSolver<'a> {
 }
 
 /// A constraint to ensures that poles are connected. Might not be optimal.
-/// 
+///
 /// The idea/heuristic is that every pole must be connected to some pole more "central" to it.
 ///
 /// Some "root" poles are selected based on the root_location; then distance to all other poles is calculated.

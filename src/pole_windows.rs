@@ -1,13 +1,17 @@
+#[cfg(test)]
+use std::collections::HashSet;
 use std::hash::Hash;
 use std::marker::PhantomData;
 
-use euclid::{point2, size2, vec2, Vector2D};
+use euclid::{point2, vec2, Vector2D};
 use hashbrown::HashMap;
 use num_traits::abs;
 
 use crate::better_bp::EntityId;
 use crate::bp_model::{BpModel, WorldEntity};
-use crate::position::{MapPosition, MapPositionExt, TileBoundingBox, TilePosition, TileSpace};
+#[cfg(test)]
+use crate::position::IterTiles;
+use crate::position::{MapPosition, MapPositionExt, TilePosition, TileSpace};
 use crate::prototype_data::{EntityPrototypeRef, PoleData};
 
 pub trait GetAtPos {
@@ -31,11 +35,6 @@ where
         self(pos)
     }
 }
-
-#[cfg(test)]
-use std::collections::HashSet;
-#[cfg(test)]
-use crate::position::IterTiles;
 
 #[derive(Debug)]
 pub struct Moving2DWindow<T: GetAtPos> {
@@ -170,10 +169,12 @@ impl<T: GetAtPos> Moving2DWindow<T> {
     fn check_invariants(&self) {
         #[cfg(test)]
         {
-            let target_positions =
-                TileBoundingBox::from_origin_and_size(self.top_left, size2(self.size, self.size))
-                    .iter_tiles()
-                    .collect::<HashSet<_>>();
+            let target_positions = crate::position::TileBoundingBox::from_origin_and_size(
+                self.top_left,
+                euclid::size2(self.size, self.size),
+            )
+            .iter_tiles()
+            .collect::<HashSet<_>>();
             assert_eq!(self.cur_pts, target_positions);
         }
     }
@@ -228,7 +229,7 @@ impl<'a, P: PoleWindowParams> PoleWindows<'a, P> {
         let top_left = Self::get_window_top_left(pole_data, rep_center);
         let bottom_right = (rep_center + vec2(radius, radius)).tile_pos();
         let size = bottom_right - top_left;
-        size.x.max(size.y)
+        size.x.max(size.y) + 1
     }
     pub fn get_window_for(&mut self, pole: &WorldEntity) -> &mut Moving2DWindow<&'a BpModel> {
         let prototype = &pole.prototype;

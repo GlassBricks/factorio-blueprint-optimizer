@@ -1,3 +1,13 @@
+mod algorithms;
+mod better_bp;
+mod bp_model;
+mod draw;
+mod pole_graph;
+mod pole_windows;
+mod position;
+mod prototype_data;
+mod rcid;
+
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Debug;
@@ -12,23 +22,13 @@ use good_lp::highs;
 use once_cell::sync::Lazy;
 use petgraph::graph::NodeIndex;
 
+use algorithms::*;
 use better_bp::BlueprintEntities;
 use bp_model::BpModel;
 use pole_graph::*;
-use pole_solver::*;
 
 use crate::position::{BoundingBoxExt, TileBoundingBox};
 use crate::prototype_data::{EntityPrototypeDict, EntityPrototypeRef};
-
-mod better_bp;
-mod bp_model;
-mod draw;
-mod pole_graph;
-mod pole_solver;
-mod pole_windows;
-mod position;
-mod prototype_data;
-mod rcid;
 
 #[derive(Parser, Debug)]
 #[command(version, about, subcommand_required = true, next_line_help = true)]

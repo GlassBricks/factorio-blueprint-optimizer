@@ -3,15 +3,13 @@ use std::error::Error;
 use hashbrown::{HashMap, HashSet};
 use petgraph::prelude::*;
 
-pub use connections::*;
-pub use set_cover_ilp::*;
 
 use crate::better_bp::EntityId;
 use crate::pole_graph::CandPoleGraph;
 
-mod connections;
-mod min_scored;
-mod set_cover_ilp;
+pub mod set_cover_ilp;
+pub use set_cover_ilp::*;
+
 
 /// A solver for the pole cover problem: given a pole graph, find a subgraph
 /// of poles that still powers all entities and has the minimum cost.

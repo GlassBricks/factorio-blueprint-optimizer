@@ -1,15 +1,13 @@
-use std::ops::Deref;
-
-use euclid::*;
-use hashbrown::{HashMap, HashSet};
-use itertools::Itertools;
-
 use crate::better_bp::{BlueprintEntities, BlueprintEntityData, EntityId};
 use crate::position::{
     BoundingBox, BoundingBoxExt, CardinalDirection, IterTiles, MapPosition, Rotate,
     TileBoundingBox, TilePosition,
 };
 use crate::prototype_data::{EntityPrototypeDict, EntityPrototypeRef, PoleData};
+use euclid::vec2;
+use hashbrown::{HashMap, HashSet};
+use itertools::Itertools;
+use std::ops::Deref;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorldEntity {
@@ -62,8 +60,8 @@ impl Deref for ModelEntity {
         &self.entity
     }
 }
+
 impl ModelEntity {
-    // non-mut access only
     pub fn id(&self) -> EntityId {
         self.id
     }
@@ -79,6 +77,7 @@ pub enum EntityExtraData {
 pub struct PoleConnections {
     pub connections: HashSet<EntityId>,
 }
+
 impl ModelEntity {
     fn new_empty(id: EntityId, entity: WorldEntity) -> Self {
         ModelEntity {
@@ -96,10 +95,7 @@ impl ModelEntity {
 
     pub fn pole_data(&self) -> Option<(PoleData, &PoleConnections)> {
         match &self.extra {
-            EntityExtraData::Pole(pole) => Some((
-                self.prototype.pole_data.unwrap(),
-                pole,
-            )),
+            EntityExtraData::Pole(pole) => Some((self.prototype.pole_data.unwrap(), pole)),
             _ => None,
         }
     }
@@ -241,9 +237,10 @@ impl BpModel {
     pub fn all_entities(&self) -> impl Iterator<Item = &ModelEntity> + '_ {
         self.all_entities.values()
     }
-    
+
     pub fn all_entities_grid_order(&self) -> impl Iterator<Item = &ModelEntity> + '_ {
-        self.by_tile.iter()
+        self.by_tile
+            .iter()
             .sorted_by_key(|(pos, _)| pos.to_tuple())
             .flat_map(|(_, ids)| ids)
             .unique()
@@ -354,8 +351,10 @@ pub mod test_util {
     use crate::position::TileSpaceExt;
     use crate::prototype_data::EntityPrototype;
     use crate::rcid::RcId;
+    use euclid::point2;
 
     use super::*;
+    use crate::bp_model::{BpModel, WorldEntity};
 
     pub fn small_pole_prototype() -> EntityPrototypeRef {
         RcId::new(EntityPrototype {
@@ -410,9 +409,11 @@ pub mod test_util {
 mod tests {
     use crate::prototype_data::EntityPrototype;
     use crate::rcid::RcId;
+    use euclid::point2;
 
     use super::*;
-    use super::test_util::*;
+    use crate::bp_model::test_util::*;
+    use crate::bp_model::{BpModel, WorldEntity};
 
     fn entity_data(uses_power: bool) -> EntityPrototypeRef {
         RcId::new(EntityPrototype {

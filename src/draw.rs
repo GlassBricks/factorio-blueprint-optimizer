@@ -23,7 +23,7 @@ pub struct Drawing<'a> {
     padding: i32,
 }
 
-impl <'a> Drawing<'a> {
+impl<'a> Drawing<'a> {
     pub fn on_area(
         name: &'a impl AsRef<std::path::Path>,
         area: TileBoundingBox,
@@ -33,7 +33,7 @@ impl <'a> Drawing<'a> {
         let tile_shift = area.min.corner_map_pos().to_vector();
         let size = (area.size() * pixels_per_tile).to_vector() + vec2(padding, padding) * 2;
         let dim = size.to_u32().to_tuple();
-        let root = BitMapBackend::<'a,_>::new(name, dim).into_drawing_area();
+        let root = BitMapBackend::<'a, _>::new(name, dim).into_drawing_area();
         root.fill(&BACKGROUND_COLOR)?;
 
         Ok(Drawing {
@@ -94,13 +94,25 @@ impl <'a> Drawing<'a> {
     ) -> Result<(), Box<dyn std::error::Error>> {
         for edge in graph.edge_references() {
             let (from, to) = graph.edge_endpoints(edge.id()).unwrap();
-            let from = self.map_pos(graph[from].position());
-            let to = self.map_pos(graph[to].position());
-            self.area.draw(&PathElement::new(
-                vec![from, to],
-                POLE_GRAPH_COLOR.stroke_width((width * self.scale as f64).ceil() as u32),
-            ))?;
+            self.draw_line(
+                graph[from].position(),
+                graph[to].position(),
+                ShapeStyle::from(
+                    POLE_GRAPH_COLOR.stroke_width((width * self.scale as f64).ceil() as u32),
+                ),
+            )?;
         }
+        Ok(())
+    }
+    pub fn draw_line(
+        &self,
+        from: MapPosition,
+        to: MapPosition,
+        style: ShapeStyle,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let from = self.map_pos(from);
+        let to = self.map_pos(to);
+        self.area.draw(&PathElement::new(vec![from, to], style))?;
         Ok(())
     }
 
